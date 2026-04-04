@@ -34,6 +34,7 @@ FZF_MULTI=("${FZF_COMMON[@]}" --multi --bind=space:toggle,ctrl-a:toggle-all)
 FZF_HEADER_CATEGORY="--header=Select PIM category (Esc to exit)"
 FZF_HEADER_ROLES="--header=Space/Tab=select  Enter=confirm  Ctrl-A=all  Esc=back"
 FZF_HEADER_DURATION="--header=Select activation duration (Esc=back)"
+FZF_HEADER_SUBS="--header=Select subscriptions (Space=toggle  Ctrl-A=all  Esc=back)"
 
 # Session state
 USER_ID=""
@@ -140,6 +141,18 @@ pim_list_eligible() {
     echo "$result"
 }
 
+arm_list_eligible() {
+    local sub_id="$1"
+    local result
+    if ! result=$(az rest --method GET \
+        --url "$ARM_API/subscriptions/$sub_id/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?\$filter=asTarget() and status eq 'Provisioned'&api-version=2020-10-01" \
+        2>/dev/null); then
+        printf "${RED}Error fetching eligible ARM roles for subscription %s${NC}\n" "$sub_id" >&2
+        return 1
+    fi
+    echo "$result"
+}
+
 # -----------------------------------------------------------------------------
 # Display Formatting
 # -----------------------------------------------------------------------------
@@ -177,6 +190,16 @@ format_groups_eligible() {
         "\t" +
         "roleDefinitionId=" + (.roleDefinitionId // "unknown") +
         "&resourceId=" + (.resourceId // "unknown")' <<< "$json" 2>/dev/null
+}
+
+format_arm_eligible() {
+    local json="$1"
+    jq -r '.value[] |
+        (.properties.expandedProperties.roleDefinition.displayName // "unknown") + " | " +
+        (.properties.expandedProperties.scope.displayName // "unknown") +
+        "\t" +
+        "roleDefinitionId=" + (.properties.roleDefinitionId // "") +
+        "&scope=" + (.properties.scope // "")' <<< "$json" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------------
@@ -274,6 +297,35 @@ pick_roles() {
     echo "$selected"
 }
 
+pick_subscriptions() {
+    local subs_json
+    if ! subs_json=$(az account list --output json 2>/dev/null); then
+        printf "${RED}Error fetching subscriptions — check az login${NC}\n" >&2
+        return 1
+    fi
+
+    local count
+    count=$(jq 'length' <<< "$subs_json" 2>/dev/null) || count=0
+    if (( count == 0 )); then
+        printf "${YELLOW}No subscriptions found${NC}\n"
+        return 1
+    fi
+
+    local lines
+    lines=$(jq -r '.[] | (.name // "unknown") + " (" + (.id // "") + ")" + "\t" + (.id // "")' \
+        <<< "$subs_json" 2>/dev/null)
+
+    local selected
+    selected=$(printf '%s\n' "$lines" | fzf "${FZF_MULTI[@]}" "$FZF_HEADER_SUBS" \
+        --with-nth=1 --delimiter=$'\t') || return 1
+
+    if [[ -z "$selected" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$selected" | cut -d$'\t' -f2
+}
+
 flow_entra_roles() {
     local json
     json=$(pim_list_eligible "aadroles") || return 1
@@ -314,6 +366,41 @@ flow_pim_groups() {
     pick_roles "$lines" || return 1
 }
 
+flow_azure_resources() {
+    local sub_ids
+    sub_ids=$(pick_subscriptions) || return 1
+
+    local all_lines=""
+    while IFS= read -r sub_id; do
+        [[ -z "$sub_id" ]] && continue
+        local json
+        if ! json=$(arm_list_eligible "$sub_id"); then
+            continue  # warning already printed to stderr by arm_list_eligible
+        fi
+
+        local count
+        count=$(jq -r 'if .value then (.value | length) else 0 end' <<< "$json" 2>/dev/null) || count=0
+        (( count == 0 )) && continue
+
+        local lines
+        lines=$(format_arm_eligible "$json")
+        [[ -z "$lines" ]] && continue
+
+        if [[ -z "$all_lines" ]]; then
+            all_lines="$lines"
+        else
+            all_lines="${all_lines}"$'\n'"${lines}"
+        fi
+    done <<< "$sub_ids"
+
+    if [[ -z "$all_lines" ]]; then
+        printf "${YELLOW}No eligible assignments found for Azure Resources${NC}\n"
+        return 1
+    fi
+
+    pick_roles "$all_lines" || return 1
+}
+
 # -----------------------------------------------------------------------------
 # Activation Orchestration
 # -----------------------------------------------------------------------------
@@ -345,7 +432,8 @@ main() {
                 printf "${YELLOW}Roles selected — activation coming in Epic 3${NC}\n"
                 ;;
             "Azure Resources")
-                printf "${YELLOW}Azure Resources — coming in Story 2.2${NC}\n"
+                flow_azure_resources || continue
+                printf "${YELLOW}Roles selected — activation coming in Epic 3${NC}\n"
                 ;;
         esac
     done
