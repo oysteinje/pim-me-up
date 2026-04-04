@@ -128,6 +128,18 @@ fetch_active_arm() {
     echo "$result"
 }
 
+pim_list_eligible() {
+    local category="$1"  # "aadroles" or "aadGroups"
+    local result
+    if ! result=$(az rest --resource "$PIM_API" --method GET \
+        --url "$PIM_API/api/v2/privilegedAccess/$category/roleAssignments?\$filter=subjectId eq '$USER_ID' and assignmentState eq 'Eligible'&\$expand=roleDefinition(\$expand=resource)" \
+        2>/dev/null); then
+        printf "${RED}Error fetching eligible %s — check az login and PIM permissions${NC}\n" "$category" >&2
+        return 1
+    fi
+    echo "$result"
+}
+
 # -----------------------------------------------------------------------------
 # Display Formatting
 # -----------------------------------------------------------------------------
@@ -145,6 +157,26 @@ format_pim_groups() {
 format_arm_roles() {
     local json="$1"
     jq -r '.value[] | (.properties.expandedProperties.roleDefinition.displayName // "unknown") + " (" + (.properties.expandedProperties.scope.displayName // "unknown") + ")"' <<< "$json" 2>/dev/null
+}
+
+format_entra_eligible() {
+    local json="$1"
+    jq -r '.value[] |
+        (.roleDefinition.displayName // "unknown") + " | " +
+        (.roleDefinition.resource.displayName // "unknown") +
+        "\t" +
+        "roleDefinitionId=" + (.roleDefinitionId // "") +
+        "&resourceId=" + (.resourceId // "")' <<< "$json" 2>/dev/null
+}
+
+format_groups_eligible() {
+    local json="$1"
+    jq -r '.value[] |
+        (.roleDefinition.resource.displayName // "unknown") + " | " +
+        (.roleDefinition.displayName // "member") +
+        "\t" +
+        "roleDefinitionId=" + (.roleDefinitionId // "") +
+        "&resourceId=" + (.resourceId // "")' <<< "$json" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------------
@@ -234,6 +266,46 @@ pick_category() {
     echo "$selection"
 }
 
+pick_roles() {
+    local lines="$1"
+    local selected
+    selected=$(echo "$lines" | fzf "${FZF_MULTI[@]}" "$FZF_HEADER_ROLES" \
+        --with-nth=1 --delimiter=$'\t') || return 1
+    echo "$selected"
+}
+
+flow_entra_roles() {
+    local json
+    json=$(pim_list_eligible "aadroles") || return 1
+
+    local count
+    count=$(jq -r '.value | length' <<< "$json" 2>/dev/null) || count=0
+    if (( count == 0 )); then
+        printf "${YELLOW}No eligible assignments found for Entra ID Roles${NC}\n"
+        return 1
+    fi
+
+    local lines
+    lines=$(format_entra_eligible "$json")
+    pick_roles "$lines" || return 1
+}
+
+flow_pim_groups() {
+    local json
+    json=$(pim_list_eligible "aadGroups") || return 1
+
+    local count
+    count=$(jq -r '.value | length' <<< "$json" 2>/dev/null) || count=0
+    if (( count == 0 )); then
+        printf "${YELLOW}No eligible assignments found for PIM Groups${NC}\n"
+        return 1
+    fi
+
+    local lines
+    lines=$(format_groups_eligible "$json")
+    pick_roles "$lines" || return 1
+}
+
 # -----------------------------------------------------------------------------
 # Activation Orchestration
 # -----------------------------------------------------------------------------
@@ -255,15 +327,19 @@ main() {
         local category
         category=$(pick_category) || exit 0
 
-        # Placeholder — Epic 2 stories implement each branch
-        # Story 2.1 replaces "Entra ID Roles" and "PIM Groups" branches
-        # Story 2.2 replaces "Azure Resources" branch
         case "$category" in
-            "Entra ID Roles"|"PIM Groups"|"Azure Resources")
-                printf "${YELLOW}%s selected — role flow coming in Epic 2${NC}\n" "$category"
+            "Entra ID Roles")
+                flow_entra_roles || continue
+                printf "${YELLOW}Roles selected — activation coming in Epic 3${NC}\n"
+                ;;
+            "PIM Groups")
+                flow_pim_groups || continue
+                printf "${YELLOW}Roles selected — activation coming in Epic 3${NC}\n"
+                ;;
+            "Azure Resources")
+                printf "${YELLOW}Azure Resources — coming in Story 2.2${NC}\n"
                 ;;
         esac
-        # Loop back to category picker (simulates Esc-from-role-picker for now)
     done
 }
 
