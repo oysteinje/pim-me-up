@@ -6,7 +6,7 @@ Activate Entra ID roles, PIM groups, and Azure resource roles — all with fuzzy
 
 ## Features
 
-- **Three PIM categories**: Entra ID Roles, PIM Groups, Azure Subscriptions (resource roles)
+- **Four menu categories**: Active Assignments, Entra ID Roles, PIM Groups, Azure Resources
 - **Fuzzy search**: Find roles instantly with fzf
 - **Multi-select**: Activate multiple roles at once (Space to select)
 - **Duration picker**: 1h / 2h / 4h / 8h
@@ -41,8 +41,8 @@ az login
 pim-me-up
 ```
 
-1. Select category (Entra ID Roles / PIM Groups / Azure Subscriptions)
-2. Search and select roles (Space for multi-select, Enter to confirm)
+1. Select category (`Active Assignments`, `Entra ID Roles`, `PIM Groups`, or `Azure Resources`)
+2. If you choose an activation category, search and select roles (Space for multi-select, Enter to confirm)
 3. Pick duration
 4. Enter justification
 5. Done
@@ -55,12 +55,9 @@ pim-me-up
 
 Authentication piggybacks on your Azure CLI session (`az account get-access-token`). No extra credentials or service principals needed.
 
-## Improvements 
+# Improvements (TBA)
 
-- Activate multiple PIM roles in parallell
-- Show active PIM assignments on startup 
--- The active PIM assignments should not affect the startup time but load independently 
--- The active PIM assignemnts should be categorized by entra id role, group and azure resources
+- Activate multiple roles in parallell for effiency
 
 ## License
 

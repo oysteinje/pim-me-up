@@ -44,6 +44,7 @@ CACHE_ENTRA=""     # cached eligible Entra ID Roles JSON
 CACHE_GROUPS=""    # cached eligible PIM Groups JSON
 CACHE_ARM=""       # cached eligible Azure Resource roles JSON (per subscription)
 CACHE_SUBS=""      # cached subscription list JSON
+CACHE_SUB_LOOKUP="" # cached subscription lookup JSON
 
 # -----------------------------------------------------------------------------
 # Utility Functions
@@ -108,6 +109,78 @@ iso_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+show_spinner() {
+    local pid="$1"
+    local message="$2"
+    local frames=('|' '/' '-' '\')
+    local i=0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r%s %s" "$message" "${frames[i % ${#frames[@]}]}"
+        i=$(( i + 1 ))
+        sleep 0.1
+    done
+
+    wait "$pid"
+    local status=$?
+    printf "\r\033[K"
+    return "$status"
+}
+
+load_subscription_lookup() {
+    [[ -n "$CACHE_SUB_LOOKUP" ]] && return 0
+
+    local subs_json
+    subs_json=$(az account list --output json 2>/dev/null) || return 1
+    CACHE_SUB_LOOKUP="$subs_json"
+}
+
+lookup_subscription_name() {
+    local sub_id="$1"
+    [[ -n "$sub_id" ]] || { printf "unknown"; return 0; }
+
+    load_subscription_lookup >/dev/null 2>&1 || true
+
+    local sub_name=""
+    if [[ -n "$CACHE_SUB_LOOKUP" ]]; then
+        sub_name=$(jq -r --arg id "$sub_id" 'map(select(.id == $id) | .name)[0] // empty' <<< "$CACHE_SUB_LOOKUP" 2>/dev/null)
+    fi
+
+    printf "%s" "${sub_name:-$sub_id}"
+}
+
+format_arm_scope_label() {
+    local scope_path="$1"
+    local scope_type="$2"
+    local scope_name="$3"
+
+    local resource_name=""
+    local normalized_type
+    normalized_type=$(printf "%s" "$scope_type" | tr '[:upper:]' '[:lower:]')
+    resource_name="${scope_path##*/}"
+
+    case "$normalized_type" in
+        subscription)
+            printf "Subscription: %s" "${scope_name:-unknown}"
+            ;;
+        resourcegroup)
+            printf "Resource Group: %s" "${scope_name:-unknown}"
+            ;;
+        *)
+            local rg_name=""
+            if [[ "$scope_path" == */resourceGroups/* ]]; then
+                local tmp="${scope_path#*/resourceGroups/}"
+                rg_name="${tmp%%/*}"
+            fi
+            if [[ -n "$rg_name" ]]; then
+                printf "%s / %s" "$rg_name" "${scope_name:-${resource_name:-unknown}}"
+            else
+                printf "%s" "${scope_name:-${resource_name:-unknown}}"
+            fi
+            ;;
+    esac
+}
+
 # -----------------------------------------------------------------------------
 # API Functions
 # -----------------------------------------------------------------------------
@@ -116,7 +189,7 @@ fetch_active_pim() {
     local category="$1"  # "aadroles" or "aadGroups"
     local result
     result=$(az rest --resource "$PIM_API" --method GET \
-        --url "$PIM_API/api/v2/privilegedAccess/$category/roleAssignments?\$filter=subjectId eq '$USER_ID' and assignmentState eq 'Active'" \
+        --url "$PIM_API/api/v2/privilegedAccess/$category/roleAssignments?\$filter=subjectId eq '$USER_ID' and assignmentState eq 'Active'&\$expand=roleDefinition(\$expand=resource)" \
         2>/dev/null) || { echo '{"value":[]}'; return 0; }
     echo "$result"
 }
@@ -218,12 +291,45 @@ format_pim_roles() {
 
 format_pim_groups() {
     local json="$1"
-    jq -r '.value[].roleDefinition.resource.displayName // empty' <<< "$json" 2>/dev/null
+    jq -r '.value[] |
+        ((.roleDefinition.resource.displayName // .resource.displayName // .resourceId // "unknown") +
+        (if (.roleDefinition.displayName // "") != "" then " (" + .roleDefinition.displayName + ")" else "" end))' <<< "$json" 2>/dev/null
 }
 
 format_arm_roles() {
     local json="$1"
-    jq -r '.value[] | (.properties.expandedProperties.roleDefinition.displayName // "unknown") + " (" + (.properties.expandedProperties.scope.displayName // "unknown") + ")"' <<< "$json" 2>/dev/null
+    while IFS=$'\t' read -r assignment_type role scope_type scope_name scope_path; do
+        [[ "$assignment_type" == "Activated" ]] || continue
+        local scope_label
+        scope_label=$(format_arm_scope_label "$scope_path" "$scope_type" "$scope_name")
+        printf "%s | %s\n" "$scope_label" "$role"
+    done < <(jq -r '.value[] |
+        [
+          (.properties.assignmentType // ""),
+          (.properties.expandedProperties.roleDefinition.displayName // "unknown"),
+          (.properties.expandedProperties.scope.type // ""),
+          (.properties.expandedProperties.scope.displayName // ""),
+          (.properties.expandedProperties.scope.id // .properties.scope // "")
+        ] | @tsv' <<< "$json" 2>/dev/null)
+}
+
+count_nonempty_lines() {
+    local lines="$1"
+    awk 'NF { count++ } END { print count + 0 }' <<< "$lines"
+}
+
+print_assignment_section() {
+    local label="$1"
+    local items="$2"
+    local count="$3"
+
+    (( count > 0 )) || return 0
+
+    printf "  %s (%d)\n" "$label" "$count"
+    while IFS= read -r item; do
+        [[ -n "$item" ]] || continue
+        printf "    - %s\n" "$item"
+    done <<< "$items"
 }
 
 format_entra_eligible() {
@@ -248,12 +354,20 @@ format_groups_eligible() {
 
 format_arm_eligible() {
     local json="$1"
-    jq -r '.value[] |
-        (.properties.expandedProperties.roleDefinition.displayName // "unknown") + " | " +
-        (.properties.expandedProperties.scope.displayName // "unknown") +
-        "\t" +
-        "roleDefinitionId=" + (.properties.roleDefinitionId // "") +
-        "&scope=" + (.properties.scope // "")' <<< "$json" 2>/dev/null
+    while IFS=$'\t' read -r role scope_type scope_name scope_path role_definition_id scope; do
+        local scope_label
+        scope_label=$(format_arm_scope_label "$scope_path" "$scope_type" "$scope_name")
+        printf "%s | %s\troleDefinitionId=%s&scope=%s\n" \
+            "$scope_label" "$role" "$role_definition_id" "$scope"
+    done < <(jq -r '.value[] |
+        [
+          (.properties.expandedProperties.roleDefinition.displayName // "unknown"),
+          (.properties.expandedProperties.scope.type // ""),
+          (.properties.expandedProperties.scope.displayName // ""),
+          (.properties.expandedProperties.scope.id // .properties.scope // ""),
+          (.properties.roleDefinitionId // ""),
+          (.properties.scope // "")
+        ] | @tsv' <<< "$json" 2>/dev/null)
 }
 
 # -----------------------------------------------------------------------------
@@ -273,31 +387,12 @@ show_active_assignments() {
     fetch_active_arm > "$tmpdir/arm" 2>/dev/null &
     local pid_arm=$!
 
-    # Wait up to 1 second using millisecond wall-clock polling
-    local deadline_ms=$(( $(date +%s%3N) + 1000 ))
-    while (( $(date +%s%3N) < deadline_ms )); do
-        # Check if all processes have finished
-        if ! kill -0 "$pid_entra" 2>/dev/null && \
-           ! kill -0 "$pid_groups" 2>/dev/null && \
-           ! kill -0 "$pid_arm" 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-    done
-
-    # If any still running, kill them and silently skip
-    local timed_out=false
-    for pid in $pid_entra $pid_groups $pid_arm; do
-        if kill -0 "$pid" 2>/dev/null; then
-            timed_out=true
-            kill "$pid" 2>/dev/null || true
-        fi
-    done
+    # Wait for all fetches, with a 30s timeout via background killer
+    ( sleep 30; kill "$pid_entra" "$pid_groups" "$pid_arm" 2>/dev/null ) &
+    local pid_killer=$!
     wait "$pid_entra" "$pid_groups" "$pid_arm" 2>/dev/null || true
-
-    if $timed_out; then
-        return 0  # silently skip on timeout
-    fi
+    kill "$pid_killer" 2>/dev/null || true
+    wait "$pid_killer" 2>/dev/null || true
 
     # Parse results
     local entra_json groups_json arm_json
@@ -311,31 +406,39 @@ show_active_assignments() {
     arm_names=$(format_arm_roles "$arm_json")
 
     local entra_count groups_count arm_count total
-    entra_count=$(echo "$entra_names" | grep -c . 2>/dev/null) || entra_count=0
-    groups_count=$(echo "$groups_names" | grep -c . 2>/dev/null) || groups_count=0
-    arm_count=$(echo "$arm_names" | grep -c . 2>/dev/null) || arm_count=0
+    entra_count=$(count_nonempty_lines "$entra_names")
+    groups_count=$(count_nonempty_lines "$groups_names")
+    arm_count=$(count_nonempty_lines "$arm_names")
     total=$((entra_count + groups_count + arm_count))
 
     if (( total == 0 )); then
-        echo "No active PIM assignments"
+        echo "No active assignments"
         return 0
     fi
 
-    printf "${YELLOW}Active PIM Assignments:${NC}\n"
-    if (( entra_count > 0 )); then
-        printf "  Entra ID Roles (%d): %s\n" "$entra_count" "$(echo "$entra_names" | paste -sd', ')"
-    fi
-    if (( groups_count > 0 )); then
-        printf "  PIM Groups (%d): %s\n" "$groups_count" "$(echo "$groups_names" | paste -sd', ')"
-    fi
-    if (( arm_count > 0 )); then
-        printf "  Azure Resources (%d): %s\n" "$arm_count" "$(echo "$arm_names" | paste -sd', ')"
-    fi
+    printf "${YELLOW}Active Assignments:${NC}\n"
+    print_assignment_section "Entra ID Roles" "$entra_names" "$entra_count"
+    print_assignment_section "PIM Groups" "$groups_names" "$groups_count"
+    print_assignment_section "Azure Resources" "$arm_names" "$arm_count"
+}
+
+show_active_assignments_view() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
+
+    show_active_assignments >"$tmpfile" 2>&1 &
+    local pid=$!
+
+    show_spinner "$pid" "Loading active assignments"
+    printf "\n"
+    cat "$tmpfile"
 }
 
 pick_category() {
     local selection
     selection=$(printf '%s\n' \
+        "Active Assignments" \
         "Entra ID Roles" \
         "PIM Groups" \
         "Azure Resources" \
@@ -608,11 +711,19 @@ main() {
 
     check_deps
     get_user_id
-    show_active_assignments
 
     while true; do
         local category
         category=$(pick_category) || exit 0
+
+        if [[ "$category" == "Active Assignments" ]]; then
+            printf "\n"
+            show_active_assignments_view
+            printf "\nPress Enter to return to menu..."
+            read -r _
+            printf "\n"
+            continue
+        fi
 
         local selected_roles="" duration="" justification=""
         local step="roles"
