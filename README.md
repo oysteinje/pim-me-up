@@ -55,8 +55,9 @@ pim-me-up
 
 Authentication piggybacks on your Azure CLI session (`az account get-access-token`). No extra credentials or service principals needed.
 
-# Improvements (TBA)
+# Roadmap (TBA)
 
+- Show active assignments
 - Activate multiple roles in parallell for effiency
 
 # Known bugs 

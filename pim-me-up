@@ -386,17 +386,24 @@ pick_duration() {
 }
 
 get_justification() {
-    local default="PIM activation via script"
-    local output
-    output=$(echo "" | fzf "${FZF_SINGLE[@]}" \
-        --header="Enter justification (Esc=back to duration picker)" \
-        --query="$default" \
-        --print-query \
-        --disabled \
-        --prompt="Justification: ") || return 1
-    local reason
-    reason=$(printf '%s' "$output" | head -1)
-    echo "${reason:-$default}"
+    while true; do
+        local output
+        output=$(echo "" | fzf "${FZF_SINGLE[@]}" \
+            --header="Enter justification (required, Esc=back to duration picker)" \
+            --print-query \
+            --disabled \
+            --prompt="Justification: ") || return 1
+
+        local reason
+        reason=$(printf '%s' "$output" | head -1)
+
+        if [[ -n "${reason//[[:space:]]/}" ]]; then
+            echo "$reason"
+            return 0
+        fi
+
+        printf "${YELLOW}Justification is required.${NC}\n"
+    done
 }
 
 flow_entra_roles() {
