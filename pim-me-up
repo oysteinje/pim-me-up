@@ -153,9 +153,9 @@ show_active_assignments() {
     fetch_active_arm > "$tmpdir/arm" 2>/dev/null &
     local pid_arm=$!
 
-    # Wait up to 1 second using SECONDS-based polling
-    local deadline=$((SECONDS + 1))
-    while (( SECONDS < deadline )); do
+    # Wait up to 1 second using millisecond wall-clock polling
+    local deadline_ms=$(( $(date +%s%3N) + 1000 ))
+    while (( $(date +%s%3N) < deadline_ms )); do
         # Check if all processes have finished
         if ! kill -0 "$pid_entra" 2>/dev/null && \
            ! kill -0 "$pid_groups" 2>/dev/null && \

@@ -1,6 +1,6 @@
 # Story 1.2: Active Assignment Display
 
-Status: review
+Status: done
 
 ## Story
 
@@ -222,6 +222,12 @@ Manual testing (consistent with Story 1.1 — no test framework):
 - [Source: _bmad-output/planning-artifacts/prd.md#Non-Functional Requirements] — NFR1 (2s startup), NFR2 (1s active fetch), NFR5/NFR6 (security)
 - [Source: _bmad-output/planning-artifacts/epics.md#Story 1.2] — acceptance criteria
 - [Source: _bmad-output/implementation-artifacts/1-1-dependency-check-and-script-bootstrap.md] — previous story learnings and script structure
+
+## Review Findings
+
+- [x] [Review][Patch] `$SECONDS` timing imprecision: timeout window is 0–1.9s, not a reliable 1 second [pim-me-up: show_active_assignments] — `$SECONDS` has 1-second integer resolution; `deadline=$((SECONDS + 1))` can expire in as little as ~0ms (if called just before a second tick) or as late as ~1.9s (one polling sleep after the tick). Replace with `date +%s` millisecond arithmetic or wrap the fetch block in `timeout 1`.
+- [x] [Review][Defer] `USER_ID` interpolated into URL without sanitization [pim-me-up: fetch_active_pim] — deferred, pre-existing (tracked from story 1.1 review, address in Epic 2)
+- [x] [Review][Defer] 1-second timeout unrealistic for Azure CLI cold path (token refresh) [pim-me-up: show_active_assignments] — deferred, product decision in spec (AC2/NFR2); virtually guarantees silent skip on first run after login
 
 ## Dev Agent Record
 
