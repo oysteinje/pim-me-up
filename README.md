@@ -55,6 +55,13 @@ pim-me-up
 
 Authentication piggybacks on your Azure CLI session (`az account get-access-token`). No extra credentials or service principals needed.
 
+## Improvements 
+
+- Activate multiple PIM roles in parallell
+- Show active PIM assignments on startup 
+-- The active PIM assignments should not affect the startup time but load independently 
+-- The active PIM assignemnts should be categorized by entra id role, group and azure resources
+
 ## License
 
 MIT

@@ -28,13 +28,13 @@ else
     FZF_COMMON=(--height=50% --border --margin=1,2)
 fi
 FZF_SINGLE=("${FZF_COMMON[@]}" --no-multi)
-FZF_MULTI=("${FZF_COMMON[@]}" --multi --bind=space:toggle,ctrl-a:toggle-all)
+FZF_MULTI=("${FZF_COMMON[@]}" --multi --bind=tab:toggle,ctrl-a:toggle-all)
 
 # fzf headers — pass bare: fzf ... $FZF_HEADER_* (flag is part of the value)
 FZF_HEADER_CATEGORY="--header=Select PIM category (Esc to exit)"
-FZF_HEADER_ROLES="--header=Space/Tab=select  Enter=confirm  Ctrl-A=all  Esc=back"
+FZF_HEADER_ROLES="--header=Tab=select  Enter=confirm  Ctrl-A=all  Esc=back"
 FZF_HEADER_DURATION="--header=Select activation duration (Esc=back)"
-FZF_HEADER_SUBS="--header=Select subscriptions (Space=toggle  Ctrl-A=all  Esc=back)"
+FZF_HEADER_SUBS="--header=Select subscriptions (Tab=toggle  Ctrl-A=all  Esc=back)"
 
 # Session state
 USER_ID=""
