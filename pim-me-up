@@ -30,8 +30,19 @@ fi
 FZF_SINGLE="$FZF_COMMON --no-multi"
 FZF_MULTI="$FZF_COMMON --multi --bind=space:toggle,ctrl-a:toggle-all"
 
+# fzf headers
+FZF_HEADER_CATEGORY="--header=Select PIM category (Esc to exit)"
+FZF_HEADER_ROLES="--header=Space/Tab=select  Enter=confirm  Ctrl-A=all  Esc=back"
+FZF_HEADER_DURATION="--header=Select activation duration (Esc=back)"
+
 # Session state
 USER_ID=""
+
+# Session caching — populated by Epic 2 stories
+CACHE_ENTRA=""     # cached eligible Entra ID Roles JSON
+CACHE_GROUPS=""    # cached eligible PIM Groups JSON
+CACHE_ARM=""       # cached eligible Azure Resource roles JSON (per subscription)
+CACHE_SUBS=""      # cached subscription list JSON
 
 # -----------------------------------------------------------------------------
 # Utility Functions
@@ -213,6 +224,16 @@ show_active_assignments() {
     fi
 }
 
+pick_category() {
+    local selection
+    selection=$(printf '%s\n' \
+        "Entra ID Roles" \
+        "PIM Groups" \
+        "Azure Resources" \
+        | fzf $FZF_SINGLE $FZF_HEADER_CATEGORY) || return 1
+    echo "$selection"
+}
+
 # -----------------------------------------------------------------------------
 # Activation Orchestration
 # -----------------------------------------------------------------------------
@@ -224,11 +245,26 @@ show_active_assignments() {
 # -----------------------------------------------------------------------------
 
 main() {
+    trap 'exit 0' INT TERM   # Ctrl-C anywhere → clean exit
+
     check_deps
     get_user_id
     show_active_assignments
 
-    # Future stories add: category picker, etc.
+    while true; do
+        local category
+        category=$(pick_category) || exit 0
+
+        # Placeholder — Epic 2 stories implement each branch
+        # Story 2.1 replaces "Entra ID Roles" and "PIM Groups" branches
+        # Story 2.2 replaces "Azure Resources" branch
+        case "$category" in
+            "Entra ID Roles"|"PIM Groups"|"Azure Resources")
+                printf "${YELLOW}%s selected — role flow coming in Epic 2${NC}\n" "$category"
+                ;;
+        esac
+        # Loop back to category picker (simulates Esc-from-role-picker for now)
+    done
 }
 
 main "$@"
