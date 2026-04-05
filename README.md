@@ -45,10 +45,11 @@ pim-me-up
 ```
 
 1. Select category (`Active Assignments`, `Entra ID Roles`, `PIM Groups`, or `Azure Resources`)
-2. If you choose an activation category, search and select roles (Space for multi-select, Enter to confirm)
-3. Pick duration
-4. Enter justification
-5. Done
+2. If you choose `Active Assignments`, the tool shows your current assignments and returns you to the category picker
+3. If you choose an activation category, search and select roles (Space for multi-select, Enter to confirm)
+4. Pick duration
+5. Enter justification
+6. Done
 
 ## How it works
 
@@ -60,7 +61,6 @@ Authentication piggybacks on your Azure CLI session (`az account get-access-toke
 
 # Roadmap (TBA)
 
-- Show active assignments
 - Activate multiple roles in parallell for effiency
 
 # Known bugs 

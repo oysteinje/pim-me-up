@@ -97,6 +97,24 @@ get_user_id() {
     printf "${GREEN}Logged in${NC} — Tenant: %s\n" "$tenant_name"
 }
 
+show_spinner() {
+    local pid="$1"
+    local message="$2"
+    local frames=('|' '/' '-' '\')
+    local i=0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r%s %s" "$message" "${frames[i % ${#frames[@]}]}"
+        i=$(( i + 1 ))
+        sleep 0.1
+    done
+
+    wait "$pid"
+    local status=$?
+    printf "\r\033[K"
+    return "$status"
+}
+
 gen_uuid() {
     if [[ -r /proc/sys/kernel/random/uuid ]]; then
         cat /proc/sys/kernel/random/uuid
@@ -189,6 +207,68 @@ arm_list_eligible() {
         return 1
     fi
     echo "$result"
+}
+
+pim_list_active() {
+    local category="$1"  # "aadroles" or "aadGroups"
+    local result
+    result=$(az rest --resource "$PIM_API" --method GET \
+        --url "$PIM_API/api/v2/privilegedAccess/$category/roleAssignments?\$filter=subjectId eq '$USER_ID' and assignmentState eq 'Active'&\$expand=roleDefinition(\$expand=resource)" \
+        2>/dev/null) || { echo '{"value":[]}'; return 0; }
+    echo "$result"
+}
+
+arm_list_active() {
+    local subs management_groups arm_tmpdir
+    subs=$(az account list --query '[].id' -o tsv 2>/dev/null) || subs=""
+    management_groups=$(az rest --method GET \
+        --url "$ARM_API/providers/Microsoft.Management/managementGroups?api-version=2023-04-01" \
+        --query 'value[].name' -o tsv 2>/dev/null) || management_groups=""
+    [[ -z "$subs" && -z "$management_groups" ]] && { echo '{"value":[]}'; return 0; }
+
+    arm_tmpdir=$(mktemp -d)
+
+    local pids=() scope_key
+    while IFS= read -r sub_id; do
+        [[ -z "$sub_id" ]] && continue
+        scope_key=$(printf '%s' "$sub_id" | tr '/' '_')
+        (
+            az rest --method GET \
+                --url "$ARM_API/subscriptions/$sub_id/providers/Microsoft.Authorization/roleAssignmentScheduleInstances?\$filter=asTarget()&api-version=2020-10-01" \
+                > "$arm_tmpdir/subscription-$scope_key" 2>/dev/null || rm -f "$arm_tmpdir/subscription-$scope_key"
+        ) &
+        pids+=($!)
+    done <<< "$subs"
+
+    while IFS= read -r mg_id; do
+        [[ -z "$mg_id" ]] && continue
+        scope_key=$(printf '%s' "$mg_id" | tr '/' '_')
+        (
+            az rest --method GET \
+                --url "$ARM_API/providers/Microsoft.Management/managementGroups/$mg_id/providers/Microsoft.Authorization/roleAssignmentScheduleInstances?\$filter=asTarget()&api-version=2020-10-01" \
+                > "$arm_tmpdir/management-group-$scope_key" 2>/dev/null || rm -f "$arm_tmpdir/management-group-$scope_key"
+        ) &
+        pids+=($!)
+    done <<< "$management_groups"
+
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    if compgen -G "$arm_tmpdir/*" >/dev/null 2>&1; then
+        jq -s '
+            {
+                "value": (
+                    [.[].value[]]
+                    | unique_by(.id // (.properties.scope + "|" + .properties.roleDefinitionId + "|" + (.properties.startDateTime // "")))
+                )
+            }
+        ' "$arm_tmpdir"/* 2>/dev/null || echo '{"value":[]}'
+    else
+        echo '{"value":[]}'
+    fi
+
+    rm -rf "$arm_tmpdir"
 }
 
 pim_activate() {
@@ -287,6 +367,124 @@ format_arm_eligible() {
         ] | @tsv' <<< "$json" 2>/dev/null)
 }
 
+format_active_entra_roles() {
+    local json="$1"
+    jq -r '.value[].roleDefinition.displayName // empty' <<< "$json" 2>/dev/null
+}
+
+format_active_pim_groups() {
+    local json="$1"
+    jq -r '.value[] |
+        ((.roleDefinition.resource.displayName // .resource.displayName // .resourceId // "unknown") +
+        (if (.roleDefinition.displayName // "") != "" then " (" + .roleDefinition.displayName + ")" else "" end))' <<< "$json" 2>/dev/null
+}
+
+format_active_arm_roles() {
+    local json="$1"
+    jq -r '.value[]
+        | select((.properties.endDateTime // "") != "")
+        | (.properties.expandedProperties.roleDefinition.displayName // "unknown") + " (" +
+          (
+            if (.properties.expandedProperties.scope.type // "" | ascii_downcase) == "managementgroup" then
+                "Management Group: " + (.properties.expandedProperties.scope.displayName // .properties.expandedProperties.scope.id // "unknown")
+            elif (.properties.expandedProperties.scope.type // "" | ascii_downcase) == "subscription" then
+                "Subscription: " + (.properties.expandedProperties.scope.displayName // .properties.expandedProperties.scope.id // "unknown")
+            elif (.properties.expandedProperties.scope.type // "" | ascii_downcase) == "resourcegroup" then
+                "Resource Group: " + (.properties.expandedProperties.scope.displayName // .properties.expandedProperties.scope.id // "unknown")
+            else
+                (.properties.expandedProperties.scope.displayName // .properties.expandedProperties.scope.id // "unknown")
+            end
+          ) + ")"' <<< "$json" 2>/dev/null
+}
+
+count_nonempty_lines() {
+    local lines="$1"
+    awk 'NF { count++ } END { print count + 0 }' <<< "$lines"
+}
+
+print_assignment_section() {
+    local label="$1"
+    local items="$2"
+    local count="$3"
+
+    (( count > 0 )) || return 0
+
+    printf "  %s (%d)\n" "$label" "$count"
+    while IFS= read -r item; do
+        [[ -n "$item" ]] || continue
+        printf "    - %s\n" "$item"
+    done <<< "$items"
+}
+
+show_active_assignments() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    pim_list_active "aadroles" > "$tmpdir/entra" 2>/dev/null &
+    local pid_entra=$!
+    pim_list_active "aadGroups" > "$tmpdir/groups" 2>/dev/null &
+    local pid_groups=$!
+    arm_list_active > "$tmpdir/arm" 2>/dev/null &
+    local pid_arm=$!
+
+    (
+        sleep 30
+        kill "$pid_entra" "$pid_groups" "$pid_arm" 2>/dev/null || true
+    ) &
+    local pid_killer=$!
+
+    wait "$pid_entra" "$pid_groups" "$pid_arm" 2>/dev/null || true
+    kill "$pid_killer" 2>/dev/null || true
+    wait "$pid_killer" 2>/dev/null || true
+
+    local entra_json groups_json arm_json
+    entra_json=$(<"$tmpdir/entra")
+    groups_json=$(<"$tmpdir/groups")
+    arm_json=$(<"$tmpdir/arm")
+
+    rm -rf "$tmpdir"
+
+    local entra_names groups_names arm_names
+    entra_names=$(format_active_entra_roles "$entra_json")
+    groups_names=$(format_active_pim_groups "$groups_json")
+    arm_names=$(format_active_arm_roles "$arm_json")
+
+    local entra_count groups_count arm_count total
+    entra_count=$(count_nonempty_lines "$entra_names")
+    groups_count=$(count_nonempty_lines "$groups_names")
+    arm_count=$(count_nonempty_lines "$arm_names")
+    total=$((entra_count + groups_count + arm_count))
+
+    if (( total == 0 )); then
+        echo "No active assignments"
+        return 0
+    fi
+
+    printf "${YELLOW}Active Assignments:${NC}\n"
+    print_assignment_section "Entra ID Roles" "$entra_names" "$entra_count"
+    print_assignment_section "PIM Groups" "$groups_names" "$groups_count"
+    print_assignment_section "Azure Resources" "$arm_names" "$arm_count"
+}
+
+show_active_assignments_view() {
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    show_active_assignments >"$tmpfile" 2>&1 &
+    local pid=$!
+
+    show_spinner "$pid" "Loading active assignments"
+    printf "\n"
+    cat "$tmpfile"
+    rm -f "$tmpfile"
+}
+
+pause_for_menu_return() {
+    printf "\nPress Enter to return to categories..."
+    read -r _
+    printf "\n"
+}
+
 # -----------------------------------------------------------------------------
 # UI Flow Functions
 # -----------------------------------------------------------------------------
@@ -297,6 +495,7 @@ pick_category() {
         "Entra ID Roles" \
         "PIM Groups" \
         "Azure Resources" \
+        "Active Assignments" \
         | fzf "${FZF_SINGLE[@]}" "$FZF_HEADER_CATEGORY") || return 1
     echo "$selection"
 }
@@ -577,6 +776,12 @@ main() {
     while true; do
         local category
         category=$(pick_category) || exit 0
+
+        if [[ "$category" == "Active Assignments" ]]; then
+            show_active_assignments_view
+            pause_for_menu_return
+            continue
+        fi
 
         local selected_roles="" duration="" justification=""
         local step="roles"
