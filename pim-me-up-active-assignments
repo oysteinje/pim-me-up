@@ -77,7 +77,9 @@ fetch_active_pim() {
 fetch_active_arm() {
     local subs management_groups arm_tmpdir
     subs=$(az account list --query '[].id' -o tsv 2>/dev/null) || subs=""
-    management_groups=$(az account management-group list --query '[].name' -o tsv 2>/dev/null) || management_groups=""
+    management_groups=$(az rest --method GET \
+        --url "$ARM_API/providers/Microsoft.Management/managementGroups?api-version=2023-04-01" \
+        --query 'value[].name' -o tsv 2>/dev/null) || management_groups=""
     [[ -z "$subs" && -z "$management_groups" ]] && { echo '{"value":[]}'; return 0; }
 
     arm_tmpdir=$(mktemp -d)
@@ -222,7 +224,7 @@ show_active_assignments() {
 show_active_assignments_view() {
     local tmpfile
     tmpfile=$(mktemp)
-    trap 'rm -f "$tmpfile"' RETURN
+    trap "rm -f '$tmpfile'" RETURN
 
     show_active_assignments >"$tmpfile" 2>&1 &
     local pid=$!
