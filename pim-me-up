@@ -35,6 +35,8 @@ FZF_HEADER_CATEGORY="--header=Select PIM category (Esc to exit)"
 FZF_HEADER_ROLES="--header=Tab=select  Enter=confirm  Ctrl-A=all  Esc=back"
 FZF_HEADER_DURATION="--header=Select activation duration (Esc=back)"
 FZF_HEADER_SUBS="--header=Select subscriptions (Tab=toggle  Ctrl-A=all  Esc=back)"
+FZF_HEADER_AZURE_SCOPE="--header=Select Azure resource scope (Esc=back)"
+FZF_HEADER_MGS="--header=Select management groups (Tab=toggle  Ctrl-A=all  Esc=back)"
 
 # Session state
 USER_ID=""
@@ -42,8 +44,9 @@ USER_ID=""
 # Session caching — populated by Epic 2 stories
 CACHE_ENTRA=""     # cached eligible Entra ID Roles JSON
 CACHE_GROUPS=""    # cached eligible PIM Groups JSON
-CACHE_ARM=""       # cached eligible Azure Resource roles JSON (per subscription)
-CACHE_SUBS=""      # cached subscription list JSON
+CACHE_ARM_KIND=""  # cached Azure Resources branch for back-navigation
+CACHE_ARM_SUB=""   # cached Azure Resource role lines for subscription flow
+CACHE_ARM_MG=""    # cached Azure Resource role lines for management group flow
 CACHE_SUB_LOOKUP="" # cached subscription lookup JSON
 
 # -----------------------------------------------------------------------------
@@ -149,29 +152,58 @@ lookup_subscription_name() {
     printf "%s" "${sub_name:-$sub_id}"
 }
 
+normalize_arm_scope_type() {
+    local scope_path="$1"
+    local scope_type="$2"
+    local scope_path_lower="${scope_path,,}"
+    local normalized_type
+    normalized_type=$(printf "%s" "$scope_type" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$scope_path_lower" =~ ^/providers/microsoft\.management/managementgroups/[^/]+(/.*)?$ ]]; then
+        printf "managementgroup"
+    elif [[ "$scope_path_lower" =~ ^/subscriptions/[^/]+/resourcegroups/[^/]+$ ]]; then
+        printf "resourcegroup"
+    elif [[ "$scope_path_lower" =~ ^/subscriptions/[^/]+/resourcegroups/[^/]+/.+$ ]]; then
+        printf "resource"
+    elif [[ "$scope_path_lower" =~ ^/subscriptions/[^/]+$ ]]; then
+        printf "subscription"
+    elif [[ -n "$normalized_type" ]]; then
+        printf "%s" "$normalized_type"
+    else
+        printf ""
+    fi
+}
+
 format_arm_scope_label() {
     local scope_path="$1"
     local scope_type="$2"
     local scope_name="$3"
 
+    local scope_path_lower="${scope_path,,}"
     local resource_name=""
+    local rg_name=""
     local normalized_type
-    normalized_type=$(printf "%s" "$scope_type" | tr '[:upper:]' '[:lower:]')
+    local fallback_name=""
+    normalized_type=$(normalize_arm_scope_type "$scope_path" "$scope_type")
     resource_name="${scope_path##*/}"
 
+    if [[ "$scope_path_lower" =~ /resourcegroups/([^/]+) ]]; then
+        rg_name="${BASH_REMATCH[1]}"
+    fi
+
+    fallback_name="${scope_name:-${resource_name:-unknown}}"
+
     case "$normalized_type" in
+        managementgroup)
+            printf "Management Group: %s" "$fallback_name"
+            ;;
         subscription)
-            printf "Subscription: %s" "${scope_name:-unknown}"
+            printf "Subscription: %s" "$fallback_name"
             ;;
         resourcegroup)
-            printf "Resource Group: %s" "${scope_name:-unknown}"
+            printf "Resource Group: %s" "${rg_name:-$fallback_name}"
             ;;
         *)
-            local rg_name=""
-            if [[ "$scope_path" == */resourceGroups/* ]]; then
-                local tmp="${scope_path#*/resourceGroups/}"
-                rg_name="${tmp%%/*}"
-            fi
             if [[ -n "$rg_name" ]]; then
                 printf "%s / %s" "$rg_name" "${scope_name:-${resource_name:-unknown}}"
             else
@@ -204,6 +236,29 @@ arm_list_eligible() {
         --url "$ARM_API/subscriptions/$sub_id/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?\$filter=asTarget() and status eq 'Provisioned'&api-version=2020-10-01" \
         2>/dev/null); then
         printf "${RED}Error fetching eligible ARM roles for subscription %s${NC}\n" "$sub_id" >&2
+        return 1
+    fi
+    echo "$result"
+}
+
+arm_list_management_groups() {
+    local result
+    if ! result=$(az rest --method GET \
+        --url "$ARM_API/providers/Microsoft.Management/managementGroups?api-version=2023-04-01" \
+        2>/dev/null); then
+        printf "${RED}Error fetching management groups — check az login and ARM permissions${NC}\n" >&2
+        return 1
+    fi
+    echo "$result"
+}
+
+arm_list_eligible_management_group() {
+    local mg_id="$1"
+    local result
+    if ! result=$(az rest --method GET \
+        --url "$ARM_API/providers/Microsoft.Management/managementGroups/$mg_id/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?\$filter=asTarget() and status eq 'Provisioned'&api-version=2020-10-01" \
+        2>/dev/null); then
+        printf "${RED}Error fetching eligible ARM roles for management group %s${NC}\n" "$mg_id" >&2
         return 1
     fi
     echo "$result"
@@ -351,11 +406,27 @@ format_groups_eligible() {
 
 format_arm_eligible() {
     local json="$1"
+    local mode="${2:-direct}"
+    local selected_scope="${3:-}"
+    local selected_scope_name="${4:-}"
+
     while IFS=$'\t' read -r role scope_type scope_name scope_path role_definition_id scope; do
+        local effective_scope_path="${scope:-$scope_path}"
+
+        local normalized_scope_type
+        normalized_scope_type=$(normalize_arm_scope_type "$effective_scope_path" "$scope_type")
+
         local scope_label
-        scope_label=$(format_arm_scope_label "$scope_path" "$scope_type" "$scope_name")
+        scope_label=$(format_arm_scope_label "$effective_scope_path" "$scope_type" "$scope_name")
+
+        local activation_scope="$scope"
+        if [[ "$mode" == "subscription" && "$normalized_scope_type" == "managementgroup" && -n "$selected_scope" ]]; then
+            activation_scope="$selected_scope"
+            scope_label="Subscription: ${selected_scope_name:-unknown} (Inherited from ${scope_label})"
+        fi
+
         printf "%s | %s\troleDefinitionId=%s&scope=%s\n" \
-            "$scope_label" "$role" "$role_definition_id" "$scope"
+            "$role" "$scope_label" "$role_definition_id" "$activation_scope"
     done < <(jq -r '.value[] |
         [
           (.properties.expandedProperties.roleDefinition.displayName // "unknown"),
@@ -548,6 +619,15 @@ pick_roles() {
     echo "$selected"
 }
 
+pick_azure_resource_scope() {
+    local selected
+    selected=$(printf '%s\n' \
+        "Subscriptions" \
+        "Management Groups" \
+        | fzf "${FZF_SINGLE[@]}" "$FZF_HEADER_AZURE_SCOPE") || return 1
+    echo "$selected"
+}
+
 pick_subscriptions() {
     local subs_json
     if ! subs_json=$(az account list --output json 2>/dev/null); then
@@ -568,6 +648,35 @@ pick_subscriptions() {
 
     local selected
     selected=$(printf '%s\n' "$lines" | fzf "${FZF_MULTI[@]}" "$FZF_HEADER_SUBS" \
+        --with-nth=1 --delimiter=$'\t') || return 1
+
+    if [[ -z "$selected" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$selected" | cut -d$'\t' -f2
+}
+
+pick_management_groups() {
+    local management_groups_json
+    if ! management_groups_json=$(arm_list_management_groups); then
+        return 1
+    fi
+
+    local count
+    count=$(jq '(.value // []) | length' <<< "$management_groups_json" 2>/dev/null) || count=0
+    if (( count == 0 )); then
+        printf "${YELLOW}No management groups found${NC}\n"
+        return 1
+    fi
+
+    local lines
+    lines=$(jq -r '(.value // [])[] |
+        ((.properties.displayName // .displayName // .name // "unknown") + " (" + (.name // "") + ")" + "\t" + (.name // ""))' \
+        <<< "$management_groups_json" 2>/dev/null)
+
+    local selected
+    selected=$(printf '%s\n' "$lines" | fzf "${FZF_MULTI[@]}" "$FZF_HEADER_MGS" \
         --with-nth=1 --delimiter=$'\t') || return 1
 
     if [[ -z "$selected" ]]; then
@@ -613,7 +722,7 @@ flow_entra_roles() {
         json=$(pim_list_eligible "aadroles") || return 1
 
         local count
-        count=$(jq -r '.value | length' <<< "$json" 2>/dev/null) || count=0
+        count=$(jq -r 'if .value then (.value | length) else 0 end' <<< "$json" 2>/dev/null) || count=0
         if (( count == 0 )); then
             printf "${YELLOW}No eligible assignments found for Entra ID Roles${NC}\n"
             return 1
@@ -638,7 +747,7 @@ flow_pim_groups() {
         json=$(pim_list_eligible "aadGroups") || return 1
 
         local count
-        count=$(jq -r '.value | length' <<< "$json" 2>/dev/null) || count=0
+        count=$(jq -r 'if .value then (.value | length) else 0 end' <<< "$json" 2>/dev/null) || count=0
         if (( count == 0 )); then
             printf "${YELLOW}No eligible assignments found for PIM Groups${NC}\n"
             return 1
@@ -655,30 +764,69 @@ flow_pim_groups() {
     pick_roles "$lines" "$prev_selections" || return 1
 }
 
-flow_azure_resources() {
+flow_azure_resources_subscriptions() {
     local prev_selections="${1:-}"
 
-    # Use cached ARM lines if available (skip sub picker and API fetch on back-navigation)
-    if [[ -n "$CACHE_ARM" ]]; then
-        pick_roles "$CACHE_ARM" "$prev_selections" || return 1
+    if [[ -n "$prev_selections" && -n "$CACHE_ARM_SUB" ]]; then
+        pick_roles "$CACHE_ARM_SUB" "$prev_selections" || return 1
         return 0
     fi
 
-    # Cache subscription IDs to avoid re-prompting on back-navigation
     local sub_ids
-    if [[ -n "$CACHE_SUBS" ]]; then
-        sub_ids="$CACHE_SUBS"
-    else
-        sub_ids=$(pick_subscriptions) || return 1
-        CACHE_SUBS="$sub_ids"
-    fi
+    sub_ids=$(pick_subscriptions) || return 1
 
     local all_lines=""
     while IFS= read -r sub_id; do
         [[ -z "$sub_id" ]] && continue
+
         local json
         if ! json=$(arm_list_eligible "$sub_id"); then
             continue  # warning already printed to stderr by arm_list_eligible
+        fi
+
+        local count
+        count=$(jq -r '.value | length' <<< "$json" 2>/dev/null) || count=0
+        (( count == 0 )) && continue
+
+        local lines
+        lines=$(format_arm_eligible "$json" "subscription" "/subscriptions/$sub_id" "$(lookup_subscription_name "$sub_id")")
+        [[ -z "$lines" ]] && continue
+
+        if [[ -z "$all_lines" ]]; then
+            all_lines="$lines"
+        else
+            all_lines+=$'\n'"$lines"
+        fi
+    done <<< "$sub_ids"
+
+    if [[ -z "$all_lines" ]]; then
+        printf "${YELLOW}No eligible assignments found for Azure Resources${NC}\n"
+        return 1
+    fi
+
+    CACHE_ARM_KIND="Subscriptions"
+    CACHE_ARM_SUB="$all_lines"
+    pick_roles "$all_lines" "$prev_selections" || return 1
+}
+
+flow_azure_resources_management_groups() {
+    local prev_selections="${1:-}"
+
+    if [[ -n "$prev_selections" && -n "$CACHE_ARM_MG" ]]; then
+        pick_roles "$CACHE_ARM_MG" "$prev_selections" || return 1
+        return 0
+    fi
+
+    local management_group_ids
+    management_group_ids=$(pick_management_groups) || return 1
+
+    local all_lines=""
+    while IFS= read -r management_group_id; do
+        [[ -z "$management_group_id" ]] && continue
+
+        local json
+        if ! json=$(arm_list_eligible_management_group "$management_group_id"); then
+            continue  # warning already printed to stderr by arm_list_eligible_management_group
         fi
 
         local count
@@ -694,15 +842,39 @@ flow_azure_resources() {
         else
             all_lines+=$'\n'"$lines"
         fi
-    done <<< "$sub_ids"
+    done <<< "$management_group_ids"
 
     if [[ -z "$all_lines" ]]; then
-        printf "${YELLOW}No eligible assignments found for Azure Resources${NC}\n"
+        printf "${YELLOW}No eligible assignments found for Management Groups${NC}\n"
         return 1
     fi
 
-    CACHE_ARM="$all_lines"
+    CACHE_ARM_KIND="Management Groups"
+    CACHE_ARM_MG="$all_lines"
     pick_roles "$all_lines" "$prev_selections" || return 1
+}
+
+flow_azure_resources() {
+    local prev_selections="${1:-}"
+    local selection_scope
+
+    if [[ -n "$prev_selections" && -n "$CACHE_ARM_KIND" ]]; then
+        selection_scope="$CACHE_ARM_KIND"
+    else
+        selection_scope=$(pick_azure_resource_scope) || return 1
+    fi
+
+    case "$selection_scope" in
+        "Subscriptions")
+            flow_azure_resources_subscriptions "$prev_selections" || return 1
+            ;;
+        "Management Groups")
+            flow_azure_resources_management_groups "$prev_selections" || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------

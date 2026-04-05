@@ -7,6 +7,7 @@ Activate Entra ID roles, PIM groups, and Azure resource roles — all with fuzzy
 ## Features
 
 - **Four menu categories**: Active Assignments, Entra ID Roles, PIM Groups, Azure Resources
+- **Azure Resources split view**: Choose `Subscriptions` or `Management Groups`
 - **Fuzzy search**: Find roles instantly with fzf
 - **Multi-select**: Activate multiple roles at once (Space to select)
 - **Duration picker**: 1h / 2h / 4h / 8h
@@ -45,17 +46,19 @@ pim-me-up
 ```
 
 1. Select category (`Active Assignments`, `Entra ID Roles`, `PIM Groups`, or `Azure Resources`)
-2. If you choose `Active Assignments`, the tool shows your current assignments and returns you to the category picker
-3. If you choose an activation category, search and select roles (Space for multi-select, Enter to confirm)
-4. Pick duration
-5. Enter justification
-6. Done
+2. If you choose `Azure Resources`, pick `Subscriptions` or `Management Groups`
+3. If you choose `Active Assignments`, the tool shows your current assignments and returns you to the category picker
+4. If you choose an activation category, search and select roles (Space for multi-select, Enter to confirm)
+5. Pick duration
+6. Enter justification
+7. Done
 
 ## How it works
 
 - **Entra ID Roles**: Queries Microsoft Graph API for eligible directory role assignments
 - **PIM Groups**: Queries Graph API for eligible group memberships (member/owner)
-- **Azure Subscriptions**: Select subscription(s), then queries ARM API for eligible resource roles
+- **Azure Subscriptions**: Select subscription(s), then query ARM API for eligible resource roles at subscription scope, including inherited management-group roles that can be activated against the chosen subscription
+- **Azure Management Groups**: Select management group(s), then query ARM API for eligible management-group-scoped roles
 
 Authentication piggybacks on your Azure CLI session (`az account get-access-token`). No extra credentials or service principals needed.
 
