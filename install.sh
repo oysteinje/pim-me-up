@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/oysteinje/pim-me-up"
+REPO_RAW_BASE="https://raw.githubusercontent.com/oysteinje/pim-up"
 REF="main"
 TARGET_DIR="${HOME}/.local/bin"
 SYSTEM_INSTALL=0
+SCRIPT_NAME="pim-up"
 
 usage() {
     cat <<'EOF'
@@ -67,26 +68,26 @@ require_cmd mktemp
 TMP_FILE="$(mktemp)"
 trap 'rm -f "$TMP_FILE"' EXIT
 
-SCRIPT_URL="${REPO_RAW_BASE}/${REF}/pim-me-up"
+SCRIPT_URL="${REPO_RAW_BASE}/${REF}/${SCRIPT_NAME}"
 printf 'Downloading %s...\n' "$SCRIPT_URL"
 curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE"
 chmod +x "$TMP_FILE"
 
 if [[ "$SYSTEM_INSTALL" -eq 1 ]]; then
     if [[ -w "$TARGET_DIR" ]]; then
-        mv "$TMP_FILE" "${TARGET_DIR}/pim-me-up"
+        mv "$TMP_FILE" "${TARGET_DIR}/${SCRIPT_NAME}"
     else
         require_cmd sudo
         sudo mkdir -p "$TARGET_DIR"
-        sudo mv "$TMP_FILE" "${TARGET_DIR}/pim-me-up"
+        sudo mv "$TMP_FILE" "${TARGET_DIR}/${SCRIPT_NAME}"
     fi
 else
     mkdir -p "$TARGET_DIR"
-    mv "$TMP_FILE" "${TARGET_DIR}/pim-me-up"
+    mv "$TMP_FILE" "${TARGET_DIR}/${SCRIPT_NAME}"
 fi
 
-printf 'Installed pim-me-up to %s/pim-me-up\n' "$TARGET_DIR"
+printf 'Installed %s to %s/%s\n' "$SCRIPT_NAME" "$TARGET_DIR" "$SCRIPT_NAME"
 
-if ! command -v pim-me-up >/dev/null 2>&1; then
+if ! command -v "$SCRIPT_NAME" >/dev/null 2>&1; then
     printf 'Note: ensure %s is in your PATH\n' "$TARGET_DIR"
 fi
