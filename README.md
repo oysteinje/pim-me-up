@@ -4,6 +4,8 @@ Fast Azure PIM elevation from your terminal using fzf (within the limits of the 
 
 Activate Entra ID roles, PIM groups, and Azure resource roles — all with fuzzy search and multi-select.
 
+![pim-up screenshot](assets/screenshot.png)
+
 ## Features
 
 - **Five menu categories**: Active Assignments, Entra ID Roles, PIM Groups, Azure Resources, All Roles
