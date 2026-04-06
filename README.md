@@ -1,4 +1,4 @@
-# pim-me-up
+# pim-up
 
 Fast Azure PIM elevation from your terminal using fzf (within the limits of the PIM API, which can be quite slow).
 
@@ -33,20 +33,20 @@ Windows is not currently supported.
 
 - You are already authenticated with `az login`
 - Azure CLI has a readable local profile at `~/.azure/azureProfile.json`
-- `pim-me-up` uses your existing Azure CLI session and does not store credentials
+- `pim-up` uses your existing Azure CLI session and does not store credentials
 
 ## Install
 
 ```bash
 # Quick install (user-local)
-curl -fsSL https://raw.githubusercontent.com/oysteinje/pim-me-up/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oysteinje/pim-up/main/install.sh | bash
 
 # System-wide install
-curl -fsSL https://raw.githubusercontent.com/oysteinje/pim-me-up/main/install.sh | bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/oysteinje/pim-up/main/install.sh | bash -s -- --system
 
 # Manual install
-git clone https://github.com/oysteinje/pim-me-up.git
-install -m 755 pim-me-up/pim-me-up ~/.local/bin/pim-me-up
+git clone https://github.com/oysteinje/pim-up.git
+install -m 755 pim-up/pim-up ~/.local/bin/pim-up
 ```
 
 ## Usage
@@ -56,7 +56,7 @@ install -m 755 pim-me-up/pim-me-up ~/.local/bin/pim-me-up
 az login
 
 # Run it
-pim-me-up
+pim-up
 ```
 
 1. Select category (`Active Assignments`, `Entra ID Roles`, `PIM Groups`, `Azure Resources`, or `All Roles`)
