@@ -881,83 +881,38 @@ get_justification() {
 }
 
 fetch_all_eligible_parallel() {
-    load_subscription_lookup 2>/dev/null || true
-
     local tmpdir
     tmpdir=$(mktemp -d)
     local pids=()
 
-    # Phase 1: Entra, Groups, and enumeration lists — all in parallel
+    # Three parallel calls: Entra roles, PIM groups, and all ARM eligible in one tenant-level query
     ( pim_list_eligible "aadroles" 2>/dev/null || echo '{"value":[]}' ) > "$tmpdir/entra.json" &
     pids+=($!)
 
     ( pim_list_eligible "aadGroups" 2>/dev/null || echo '{"value":[]}' ) > "$tmpdir/groups.json" &
     pids+=($!)
 
-    ( jq -r '.subscriptions[].id // empty' ~/.azure/azureProfile.json 2>/dev/null || true ) > "$tmpdir/sub_ids.txt" &
-    pids+=($!)
-
     (
-        local mg_json
-        mg_json=$(arm_list_management_groups 2>/dev/null) || mg_json='{"value":[]}'
-        jq -r '(.value // [])[] | .name' <<< "$mg_json" 2>/dev/null || true
-    ) > "$tmpdir/mg_ids.txt" &
+        curl_get "$TOKEN_ARM" -G \
+            "$ARM_API/providers/Microsoft.Authorization/roleEligibilityScheduleInstances" \
+            --data-urlencode "\$filter=asTarget()" \
+            -d "api-version=2020-10-01" 2>/dev/null || echo '{"value":[]}'
+    ) > "$tmpdir/arm.json" &
     pids+=($!)
 
     for pid in "${pids[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
 
-    # Phase 2: one background process per subscription and per MG
-    pids=()
+    local all_lines="" entra_lines groups_lines arm_lines
 
-    while IFS= read -r sub_id; do
-        [[ -z "$sub_id" ]] && continue
-        local scope_key
-        scope_key=$(printf '%s' "$sub_id" | tr '/' '_')
-        (
-            local json count
-            json=$(arm_list_eligible "$sub_id" 2>/dev/null) || exit 0
-            count=$(jq '.value | length' <<< "$json" 2>/dev/null) || count=0
-            (( count == 0 )) && exit 0
-            format_arm_eligible_prefixed "$json" "subscription" "/subscriptions/$sub_id" "$(lookup_subscription_name "$sub_id")"
-        ) > "$tmpdir/arm_sub_${scope_key}.txt" &
-        pids+=($!)
-    done < "$tmpdir/sub_ids.txt"
-
-    while IFS= read -r mg_id; do
-        [[ -z "$mg_id" ]] && continue
-        local scope_key
-        scope_key=$(printf '%s' "$mg_id" | tr '/' '_')
-        (
-            local json count
-            json=$(arm_list_eligible_management_group "$mg_id" 2>/dev/null) || exit 0
-            count=$(jq '.value | length' <<< "$json" 2>/dev/null) || count=0
-            (( count == 0 )) && exit 0
-            format_arm_eligible_prefixed "$json"
-        ) > "$tmpdir/arm_mg_${scope_key}.txt" &
-        pids+=($!)
-    done < "$tmpdir/mg_ids.txt"
-
-    for pid in "${pids[@]}"; do
-        wait "$pid" 2>/dev/null || true
-    done
-
-    # Merge all results
-    local all_lines="" entra_lines groups_lines
-
-    [[ -f "$tmpdir/entra.json" ]] && entra_lines=$(format_entra_eligible_prefixed "$(<"$tmpdir/entra.json")") || entra_lines=""
+    [[ -f "$tmpdir/entra.json" ]]  && entra_lines=$(format_entra_eligible_prefixed  "$(<"$tmpdir/entra.json")")  || entra_lines=""
     [[ -f "$tmpdir/groups.json" ]] && groups_lines=$(format_groups_eligible_prefixed "$(<"$tmpdir/groups.json")") || groups_lines=""
+    [[ -f "$tmpdir/arm.json" ]]    && arm_lines=$(format_arm_eligible_prefixed       "$(<"$tmpdir/arm.json")")    || arm_lines=""
 
-    [[ -n "$entra_lines" ]] && all_lines+="${entra_lines}"$'\n'
+    [[ -n "$entra_lines" ]]  && all_lines+="${entra_lines}"$'\n'
     [[ -n "$groups_lines" ]] && all_lines+="${groups_lines}"$'\n'
-
-    for f in "$tmpdir"/arm_sub_*.txt "$tmpdir"/arm_mg_*.txt; do
-        [[ -f "$f" ]] || continue
-        local content
-        content=$(<"$f")
-        [[ -n "$content" ]] && all_lines+="${content}"$'\n'
-    done
+    [[ -n "$arm_lines" ]]    && all_lines+="${arm_lines}"$'\n'
 
     rm -rf "$tmpdir"
 
